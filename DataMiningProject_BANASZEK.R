@@ -109,68 +109,147 @@ pairs_stroke <- pairs(select(norm_num_stroke, -c(stroke)), pch = 19, col = c("co
 
 #########################################################
 
-#############Data Preprocessing##########################
-##convert categorical into expanded columns
-##standardize data
-##create datasets of just continuous data for SVM
 
+#####DECISION TREE###############################
+####Decision Trees########################################
+
+treeStroke <- select(stroke, -c(id))
+
+treeStroke <- mutate(treeStroke, 
+                     stroke = factor(stroke, levels = c(0, 1), labels = c('No', 'Stroke')),
+                     age = as.numeric(age),
+                     hypertension = as.factor(hypertension),
+                     heart_disease = as.factor(heart_disease),
+                     #ever_married = factor(ever_married, levels = c('No', 'Yes'), labels = c(0, 1)),
+                     #work_type = factor(work_type, levels = c('Private', 'children', 'Self-employed', 'Govt_job', 'Never_worked') , labels = c(1, 2, 3, 4, 5)),
+                     #Residence_type = factor(Residence_type, levels = c('Rural', 'Urban'), labels = c(0, 1)),
+                     bmi = as.numeric(bmi),
+                     smoking_status = factor(smoking_status, levels = c("formerly smoked", "Unknown", "never smoked", "smokes"), labels = c(1, 2, 3, 4)))
+
+
+
+#Do not need to standardize, can mix continuous and categorical variables
+tree <- traintestsplit(treeStroke,2/3)
+#tree_train <- select(tree$train, -c(stroke))
+#tree_test <- select(tree$train, -c(stroke))
+
+
+tree_train <- tree$train
+tree_test <- tree$test
+
+fit <- rpart(stroke~., data = tree_train, cp=.004, method = 'class')#, minsplit=5, min_bucket=5)
+rpart.plot(fit, cex = .5, extra = 106, type=2)
+#rpart.plot(fit, box.palette="RdBu", shadow.col="gray", nn=TRUE)
+
+##Evaluating the model
+tree_predict <-predict(fit, tree_test, type="class")
+table(tree_test$stroke, tree_predict)
+
+
+accuracy.meas(tree_test$stroke, tree_predict)
+roc.curve(tree_predict, tree_test$stroke, plotit = F)
+confusionMatrix(table(tree_predict, tree_test$stroke))
+xtable(table(tree_predict, tree_test$stroke), type="latex")
+
+###############################################
 #########################################################
 
 
 
 ########### SVM ##############################################
+##Run Beginning of Data Mining Project
+#Lines 8 through 48
+########### SVM ##############################################
 #only use continuous variables: age, avg_glucose_level, bmi
-#svmStroke <- subset(stroke, select = c(stroke, age, avg_glucose_level, bmi))
-#svmStroke <- mutate(svmStroke, 
-#       stroke = factor(stroke, levels = c(0, 1), labels = c('No', 'Yes')),
-#       age = as.numeric(age),
-#       avg_glucose_level = as.numeric(avg_glucose_level),
-#       bmi = as.numeric(bmi))
+svmStroke <- subset(stroke, select = c(stroke, age, avg_glucose_level, bmi))
+#make target variable as a factor
+svmStroke <- mutate(svmStroke, 
+                    stroke = factor(stroke))
+str(svmStroke)
+
+####SPLTTING TRAINING AND TEST SETS#####################################
+svm <- traintestsplit(svmStroke,.75)
+svmtrain <- subset(svm$train)
+svmtest <- subset(svm$test)
+
+####STANDARDIZATION#####################################################
+#normalize the variables here, everything between 0 and 1 
+#train_norm <- preProcess(svmtrain, method=c("range"))
+#train_norm <- predict(train_norm, train)
+#I shouldn't have to normalize the test
+#test_norm <- preProcess(test, method=c("range"))
+#test_norm <- predict(test_norm, test)
+
+#decided to standardize instead
+train_std <- preProcess(svmtrain, method=c("center", "scale"))
+train_std <- predict(train_std, svmtrain)
+
+test_std <- preProcess(svmtest, method=c("center", "scale"))
+test_std <- predict(test_std, svmtest)
+
+#####BALANCING THE DATA####################################################
+table(train_std$stroke)
+#over sampling
+data_balanced_over <- ovun.sample(stroke~., data=train_std, method = "over",N = 7052)$data
+table(data_balanced_over$stroke)
+
+#under sampling
+data_balanced_under <- ovun.sample(stroke~., data=train_std, method = "under",N = 312, seed=42)$data
+table(data_balanced_under$stroke)
+
+#########################################################
+
+
+#####RUNNING THE SVM and TIMING####################################################
+#UNDER SAMPLING radial svm, since I standardized before the balancing, I don't need to do it within the svm
+set.seed(4269)
+start_time <- Sys.time()
+rbfunder.tune <- tune.svm(stroke~., data=data_balanced_under, scale = FALSE, kernel="radial", 
+                          gamma = c(.0001, .001,.01,.1,1.10,100,200,500,1000), cost = c(.0001,.005,.01,.05,1,2,5,10,100))
+end_time <- Sys.time()
+under_time <- end_time - start_time
+
+summary(rbfunder.tune)
+bestunder.model <- rbfunder.tune$best.model
+tuneunder.test <- predict(bestunder.model, newdata=test_std)#newdata=svmtest)
+table(tuneunder.test, test_std$stroke)#svmtest$stroke)
+table(tuneunder.test)
+
+####ACCURACY CHECK
+#Checking the accuracy of the predictions
+#To check accuracy, ROSE package has a function names accuracy.meas, 
+#it computes important metrics such as precision, recall & F measure.
+accuracy.meas(test_std$stroke, tuneunder.test)
+roc.curve(tuneunder.test, test_std$stroke, plotit = F)
+confusionMatrix(table(tuneunder.test, test_std$stroke))
+xtable(table(tuneunder.test, test_std$stroke), type="latex")
+
+
+#OVER SAMPLING radial svm, since I standardized before the balancing, I don't need to do it within the svm
+set.seed(4269)
+start_time <- Sys.time()
+rbfover.tune <- tune.svm(stroke~., data=data_balanced_over, scale = FALSE, kernel="radial", 
+                         gamma = c(.001,.01,.1,1.10,100), cost = c(.0001,.005,.01,.05,1,5,10))
+end_time <- Sys.time()
+over_time <- end_time - start_time
+#over_time
+#Time difference of 15.79123 mins
+
+summary(rbfover.tune)
+bestover.model <- rbfover.tune$best.model
+tuneover.test <- predict(bestover.model, newdata=test_std) #remove stroke from here?
+table(tuneover.test, test_std$stroke)
+
+####ACCURACY CHECK
+#Checking the accuracy of the predictions
+#To check accuracy, ROSE package has a function names accuracy.meas, 
+#it computes important metrics such as precision, recall & F measure.
+accuracy.meas(test_std$stroke, tuneover.test)
+roc.curve(tuneover.test, test_std$stroke, plotit = F)
+confusionMatrix(table(tuneover.test, test_std$stroke))
+table(tuneover.test)
+table(test_std$stroke)
+xtable(table(tuneover.test, test_std$stroke), type="latex")
 
 
 #########################################################
-
-
-
-
-
-####Random Forest########################################
-#https://towardsdatascience.com/random-forest-in-r-f66adf80ec9
-#https://www.kaggle.com/csyhuang/predicting-chronic-kidney-disease
-#random forest
-rf <- randomForest(
-  num ~ .,
-  data=train)
-#predictions
-pred = predict(rf, newdata=test[-14])
-#confusion matrix
-cm = table(test[,14], pred)
-#########################################################
-
-
-#######################SVM###############################
-#https://www.datacamp.com/community/tutorials/support-vector-machines-r
-#Can do a 2D SVM with age and BMI and color code based on stroke or not
-#Maybe can separate with men and women
-#Then can do SVM with all features
-#
-#########################################################
-
-
-
-#########################################################
-##Split train and test
-##Fit model on train
-##k fold cross validation
-##https://www.geeksforgeeks.org/cross-validation-in-r-programming/
-##Gridsearch cross validation to tune parameters
-##
-##Check effectiveness of model on test set
-##confusion matrix, precision, recall
-##bias versus variance?
-
-
-#########################################################
-#Maybe I can make a prediction tool that you put in your age, weight, smoking status etc
-#it calculates your BMI and then predicts your likelihood to have a stroke
-
